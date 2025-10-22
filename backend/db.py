@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from typing import Generator
+from typing import Generator, Optional
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from utils.settings import settings
+from backend.models import Client
 
 DATABASE_URL = settings.database_url
 
@@ -28,3 +29,12 @@ def session_scope() -> Generator:
         raise
     finally:
         session.close()
+
+
+def get_client_by_key(api_key: str) -> Optional[Client]:
+    with SessionLocal() as session:
+        return session.query(Client).filter(Client.api_key == api_key).first()
+
+
+def get_client_by_code(session, code: str) -> Optional[Client]:
+    return session.query(Client).filter(Client.code == code).first()

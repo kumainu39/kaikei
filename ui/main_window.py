@@ -11,9 +11,12 @@ from PyQt6.QtWidgets import (
     QStackedWidget,
     QToolBar,
     QWidget,
+    QComboBox,
+    QLineEdit,
 )
 
 from ui.journal_entry import JournalEntryWidget
+from utils.settings import settings
 from ui.reports import ReportsWidget
 
 
@@ -27,6 +30,8 @@ class MainWindow(QMainWindow):
         self.resize(1200, 800)
 
         self.stacked_widget = QStackedWidget()
+        self.client_codes = settings.clients or []
+        self.current_client_key: str | None = None
         self.journal_widget = JournalEntryWidget(api_base_url=self.api_base_url)
         self.reports_widget = ReportsWidget()
 
@@ -49,6 +54,25 @@ class MainWindow(QMainWindow):
         reports_action = QAction("帳簿・レポート", self)
         reports_action.triggered.connect(lambda: self.stacked_widget.setCurrentWidget(self.reports_widget))
         toolbar.addAction(reports_action)
+
+        # Client selector and key input (multi-tenant)
+        if getattr(self, 'client_codes', None):
+            self.client_selector = QComboBox()
+            for code in self.client_codes:
+                self.client_selector.addItem(code)
+            toolbar.addWidget(QLabel(" Client: "))
+            toolbar.addWidget(self.client_selector)
+
+        self.client_key_edit = QLineEdit()
+        self.client_key_edit.setPlaceholderText("X-Client-Key")
+        toolbar.addWidget(QLabel(" Key: "))
+        toolbar.addWidget(self.client_key_edit)
+
+        def on_key_changed(text: str) -> None:
+            self.current_client_key = text.strip() or None
+            self.journal_widget.api_client.client_key = self.current_client_key
+
+        self.client_key_edit.textChanged.connect(on_key_changed)
 
     def _create_status_bar(self) -> None:
         status_label = QLabel("Ready")

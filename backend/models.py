@@ -25,11 +25,24 @@ class Account(Base):
     )
 
 
+class Client(Base):
+    __tablename__ = "clients"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    code = Column(String, unique=True, nullable=False)
+    base_folder = Column(String, nullable=True)
+    api_key = Column(String, unique=True, nullable=True)
+
+    journal_entries = relationship("Journal", back_populates="client")
+
+
 class Journal(Base):
     __tablename__ = "journals"
 
     id = Column(Integer, primary_key=True, index=True)
     date = Column(Date, nullable=False, default=date.today)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=True)
     debit_account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False)
     credit_account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False)
     amount = Column(Float, nullable=False)
@@ -38,6 +51,7 @@ class Journal(Base):
 
     debit_account = relationship("Account", foreign_keys=[debit_account_id], back_populates="debit_journals")
     credit_account = relationship("Account", foreign_keys=[credit_account_id], back_populates="credit_journals")
+    client = relationship("Client", back_populates="journal_entries")
 
 
 class Rule(Base):

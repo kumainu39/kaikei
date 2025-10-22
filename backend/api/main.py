@@ -4,25 +4,27 @@ from __future__ import annotations
 from datetime import date
 from typing import Any, Generator
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from backend import models
 from backend.auto_journal import suggest_accounts
-from backend.db import SessionLocal, engine
-from backend.models import Account, Journal
+from backend.db import SessionLocal, engine, get_client_by_key
+from backend.models import Account, Journal, Client
 from utils.logging_config import setup_logging
 from utils.scheduler import shutdown_scheduler, start_scheduler
 from utils.settings import settings
 from .ai_classifier import get_classifier
 from .bank_connector import fetch_bank_transactions
 from .card_connector import fetch_card_transactions
+from .scan_import import router as scan_router
 
 setup_logging()
 
 app = FastAPI(title="Kaikei Accounting API", version="0.1.0")
+app.include_router(scan_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -87,6 +89,15 @@ def get_db() -> Generator[Session, None, None]:
         db.close()
 
 
+def get_client(x_client_key: str | None = Header(default=None)) -> Client:
+    if not x_client_key:
+        raise HTTPException(status_code=401, detail="X-Client-Key required")
+    client = get_client_by_key(x_client_key)
+    if not client:
+        raise HTTPException(status_code=401, detail="Invalid client key")
+    return client
+
+
 @app.on_event("startup")
 def on_startup() -> None:
     models.Base.metadata.create_all(bind=engine)
@@ -116,13 +127,18 @@ def create_account(account: AccountCreate, db: Session = Depends(get_db)) -> Acc
 
 
 @app.get("/api/journal", response_model=list[JournalRead])
-def list_journals(db: Session = Depends(get_db)) -> list[JournalRead]:
-    return db.query(Journal).order_by(Journal.date.desc()).all()
+def list_journals(db: Session = Depends(get_db), client: Client = Depends(get_client)) -> list[JournalRead]:
+    return (
+        db.query(Journal)
+        .filter(Journal.client_id == client.id)
+        .order_by(Journal.date.desc())
+        .all()
+    )
 
 
 @app.post("/api/journal", response_model=JournalRead, status_code=201)
-def create_journal(entry: JournalCreate, db: Session = Depends(get_db)) -> JournalRead:
-    journal = Journal(**entry.dict())
+def create_journal(entry: JournalCreate, db: Session = Depends(get_db), client: Client = Depends(get_client)) -> JournalRead:
+    journal = Journal(**entry.dict(), client_id=client.id)
     db.add(journal)
     db.commit()
     db.refresh(journal)
@@ -130,10 +146,12 @@ def create_journal(entry: JournalCreate, db: Session = Depends(get_db)) -> Journ
 
 
 @app.delete("/api/journal/{journal_id}", status_code=204)
-def delete_journal(journal_id: int, db: Session = Depends(get_db)) -> None:
+def delete_journal(journal_id: int, db: Session = Depends(get_db), client: Client = Depends(get_client)) -> None:
     journal = db.get(Journal, journal_id)
     if not journal:
         raise HTTPException(status_code=404, detail="Journal not found")
+    if journal.client_id != client.id:
+        raise HTTPException(status_code=403, detail="Forbidden")
     db.delete(journal)
     db.commit()
 
@@ -175,7 +193,19 @@ def import_card_transactions(db: Session = Depends(get_db)) -> ImportResponse:
 
 
 @app.post("/api/auto_journal", response_model=AutoJournalResponse)
-async def auto_journal(entry: JournalSuggestionRequest) -> AutoJournalResponse:
+async def auto_journal(entry: JournalSuggestionRequest, db: Session = Depends(get_db), client: Client = Depends(get_client)) -> AutoJournalResponse:
+    if settings.ai_mode == "llm":
+        from backend.auto_journal import suggest_accounts_llm_rich
+        # Use rich to leverage client-scoped few-shot, then map names back to IDs
+        result = suggest_accounts_llm_rich(db, entry.summary, entry.amount, date.today().isoformat(), client_id=client.id)
+        debit = db.query(Account).filter(Account.name == result.get("debit_account")).first() if result.get("debit_account") else None
+        credit = db.query(Account).filter(Account.name == result.get("credit_account")).first() if result.get("credit_account") else None
+        return AutoJournalResponse(
+            debit=debit.id if debit else None,
+            credit=credit.id if credit else None,
+        )
+    # Fallback to local ML model
     classifier = get_classifier()
     result = classifier.predict(entry.summary, entry.amount)
+    # Assume the classifier returns account IDs if available
     return AutoJournalResponse(debit=result.get("debit"), credit=result.get("credit"))

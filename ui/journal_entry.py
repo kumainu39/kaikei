@@ -23,18 +23,25 @@ from PyQt6.QtWidgets import (
 class JournalAPIClient:
     """Async HTTP client used by the UI to communicate with FastAPI."""
 
-    def __init__(self, base_url: str) -> None:
+    def __init__(self, base_url: str, client_key: str | None = None) -> None:
         self.base_url = base_url.rstrip("/")
+        self.client_key = client_key
+
+    def _headers(self) -> dict[str, str]:
+        headers: dict[str, str] = {}
+        if self.client_key:
+            headers["X-Client-Key"] = self.client_key
+        return headers
 
     async def list_accounts(self) -> list[dict[str, Any]]:
         async with httpx.AsyncClient() as client:
-            response = await client.get(f"{self.base_url}/api/accounts")
+            response = await client.get(f"{self.base_url}/api/accounts", headers=self._headers())
             response.raise_for_status()
             return response.json()
 
     async def create_journal(self, entry: dict[str, Any]) -> dict[str, Any]:
         async with httpx.AsyncClient() as client:
-            response = await client.post(f"{self.base_url}/api/journal", json=entry)
+            response = await client.post(f"{self.base_url}/api/journal", json=entry, headers=self._headers())
             response.raise_for_status()
             return response.json()
 
